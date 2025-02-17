@@ -123,9 +123,9 @@ Admins can withdraw the protocol’s accumulated fees by calling `withdrawPlatfo
 
 Run tests with Hardhat (or your preferred testing framework):
 
-    ```bash
-    npx hardhat test
-    ```
+```bash
+npx hardhat test
+```
 
 ## Contributing
 
