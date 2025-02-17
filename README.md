@@ -89,9 +89,9 @@ The contract is deployed on Ethereum Sepolia at:
 
 ### Deployment Command (Using Hardhat)
 
-    ```bash
-    npx hardhat run scripts/deploy.js --network sepolia
-    ```
+```bash
+npx hardhat run scripts/deploy.js --network sepolia
+```
 
 ## Usage
 
