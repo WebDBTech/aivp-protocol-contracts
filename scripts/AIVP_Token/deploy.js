@@ -1,10 +1,10 @@
 const hre = require("hardhat");
 
 async function deploy() {
-  const Contract = await hre.ethers.getContractFactory("AIVPSwapTester");
+  const Contract = await hre.ethers.getContractFactory("AIVPToken");
   const contract = await hre.upgrades.deployProxy(
     Contract,
-    [process.env.UNISWAP_ROUTER_ADDRESS, process.env.UNISWAP_FACTORY_ADDRESS],
+    ["0x4D05e9C17f1aa3449062B6bF62e1Cd474Bd33F50"],
     {
       initializer: "initialize",
     }

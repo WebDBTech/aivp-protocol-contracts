@@ -1,74 +1,115 @@
 const { ethers } = require("hardhat");
+const FACTORY_ABI = require("./abis/factory.json");
+const SWAP_ROUTER_ABI = require("./abis/swaprouter.json");
+const POOL_ABI = require("./abis/pool.json");
 
+// Common utility functions
+const getProviderAndWallet = (rpcUrl, privateKey) => {
+  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+  const wallet = new ethers.Wallet(privateKey, provider);
+  return { provider, wallet };
+};
+
+const getCommonGasConfig = (gasLimit = 1000000) => ({
+  gasLimit,
+  gasPrice: ethers.utils.parseUnits("10", "gwei"),
+});
+
+const approveToken = async (tokenAddress, spenderAddress, amount, wallet) => {
+  const erc20Abi = [
+    "function approve(address spender, uint256 amount) external returns (bool)",
+  ];
+  const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, wallet);
+  console.log("Approving token...");
+  const tx = await tokenContract.approve(
+    spenderAddress,
+    amount,
+    getCommonGasConfig()
+  );
+  await tx.wait();
+  console.log("Token approved");
+};
+
+// Main functions
 async function main() {
   const Contract = await ethers.getContractFactory("Swap");
   const contract = Contract.attach(process.env.AIVP_SWAP_ADDRESS);
 
-  const response = await contract.swapAndBurn(
-    ethers.utils.parseEther("0.0001"),
-    {
-      value: ethers.utils.parseEther("0.0001"),
-      gasLimit: 1000000,
-      gasPrice: ethers.utils.parseUnits("10", "gwei"),
-    }
-  );
+  const amount = ethers.utils.parseEther("0.0001");
+  const response = await contract.swapAndBurn(amount, {
+    value: amount,
+    ...getCommonGasConfig(),
+  });
 
   const receipt = await response.wait();
-
   console.log(receipt);
 }
 
-async function createPool() {
-  const RPC_URL = process.env.BASE_SEPOLIA_RPC_URL;
-  const PRIVATE_KEY = process.env.PRIVATE_KEY;
+function encodePriceSqrt(token0Decimals, token1Decimals, priceFloat) {
+  const numerator = ethers.utils.parseUnits(
+    priceFloat.toString(),
+    token1Decimals
+  );
+  const denominator = ethers.BigNumber.from(10).pow(token0Decimals);
+  const shift192 = ethers.BigNumber.from(1).shl(192);
+  const ratioQ192 = numerator.mul(shift192).div(denominator);
 
-  const FACTORY_ADDRESS = process.env.UNISWAP_FACTORY_ADDRESS;
+  function bnSqrt(value) {
+    let x = value;
+    let y = x.add(1).shr(1);
+    while (y.lt(x)) {
+      x = y;
+      y = x.add(value.div(x)).shr(1);
+    }
+    return x;
+  }
+
+  return bnSqrt(ratioQ192);
+}
+
+function nearestUsableTick(tick, tickSpacing) {
+  return Math.floor(tick / tickSpacing) * tickSpacing;
+}
+
+async function createPool() {
+  const { provider, wallet } = getProviderAndWallet(
+    process.env.BASE_SEPOLIA_RPC_URL,
+    process.env.PRIVATE_KEY
+  );
 
   let token0 = {
     address: "0x4200000000000000000000000000000000000006",
     decimals: 18,
     ratio: 1,
-  }; // WETH
+  };
 
-  // let token1 = "0x3A3d21711048F56c33Ab90b35b35E48edabE1a09"; // AIVP
   let token1 = {
-    address: "0xd4B0EC6D024E912d26dEd548C715507cFB639F43", // TREATS
+    address: "0xd4B0EC6D024E912d26dEd548C715507cFB639F43",
     decimals: 18,
     ratio: 3000,
   };
 
-  const fee = 3000;
-
-  // When tokens are ordered (token0 < token1) for Uniswap V3,
-  // if token0 > token1 then swap tokens and corresponding amounts.
   if (token0.address.toLowerCase() > token1.address.toLowerCase()) {
     [token0, token1] = [token1, token0];
   }
 
+  const fee = 3000;
   const sqrtPriceX96 = encodePriceSqrt(
     token0.decimals,
     token1.decimals,
     token1.ratio / token0.ratio
   );
 
-  // ======== ABIs =========
-  // Minimal ABI for the Factory
-  const factoryAbi = [
-    "function getPool(address tokenA, address tokenB, uint24 fee) view returns (address)",
-    "function createPool(address tokenA, address tokenB, uint24 fee) returns (address)",
-  ];
-
-  // Minimal ABI for a Uniswap V3 Pool
   const poolAbi = ["function initialize(uint160 sqrtPriceX96) external"];
 
-  // Set up provider and wallet.
-  const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-
-  // Instantiate Uniswap V3 Factory.
-  const factory = new ethers.Contract(FACTORY_ADDRESS, factoryAbi, wallet);
+  const factory = new ethers.Contract(
+    process.env.UNISWAP_FACTORY_ADDRESS,
+    FACTORY_ABI,
+    wallet
+  );
 
   let poolAddress = await factory.getPool(token0.address, token1.address, fee);
+
   if (poolAddress === ethers.constants.AddressZero) {
     console.log("Pool does not exist. Creating pool...");
     const txCreate = await factory.createPool(
@@ -77,6 +118,7 @@ async function createPool() {
       fee
     );
     await txCreate.wait();
+
     poolAddress = await factory.getPool(token0.address, token1.address, fee);
     console.log("Pool created at:", poolAddress);
 
@@ -89,96 +131,51 @@ async function createPool() {
   }
 }
 
-function nearestUsableTick(tick, tickSpacing) {
-  return Math.floor(tick / tickSpacing) * tickSpacing;
-}
-
 async function addLiquidityByPoolAddress() {
-  // const poolAddress = "0x6d71cc4B7CD9bcB6AAf8a3798F2a0A28AdBDF7B9";
   const poolAddress = "0x9bD3a057bd75e18fA089ACC76192F16B6e0FE7DA";
   const amount0Desired = ethers.utils.parseUnits("0.3", 18);
   const amount1Desired = ethers.utils.parseUnits("1000", 18);
-  const RPC_URL = process.env.BASE_SEPOLIA_RPC_URL;
-  const PRIVATE_KEY = process.env.PRIVATE_KEY;
-  const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS;
 
-  const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-
-  const poolImmutablesAbi = [
-    "function token0() view returns (address)",
-    "function token1() view returns (address)",
-    "function fee() view returns (uint24)",
-    "function tickSpacing() view returns (int24)",
-  ];
-  const poolImmutables = new ethers.Contract(
-    poolAddress,
-    poolImmutablesAbi,
-    wallet
+  const { wallet } = getProviderAndWallet(
+    process.env.BASE_SEPOLIA_RPC_URL,
+    process.env.PRIVATE_KEY
   );
-  const token0 = await poolImmutables.token0();
-  const token1 = await poolImmutables.token1();
-  const fee = await poolImmutables.fee();
-  const tickSpacing = await poolImmutables.tickSpacing();
 
-  const poolStateAbi = [
-    "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16, uint16, uint16, uint8, bool)",
-  ];
-  const poolState = new ethers.Contract(poolAddress, poolStateAbi, wallet);
-  const [sqrtPriceX96, currentTick] = await poolState.slot0();
+  const poolImmutables = new ethers.Contract(poolAddress, POOL_ABI, wallet);
+  const poolState = new ethers.Contract(poolAddress, POOL_ABI, wallet);
 
+  const [token0, token1, fee, tickSpacing] = await Promise.all([
+    poolImmutables.token0(),
+    poolImmutables.token1(),
+    poolImmutables.fee(),
+    poolImmutables.tickSpacing(),
+  ]);
+
+  const [, currentTick] = await poolState.slot0();
   const nearestTick = nearestUsableTick(currentTick, tickSpacing);
   const tickLower = nearestTick - 2 * tickSpacing;
   const tickUpper = nearestTick + 2 * tickSpacing;
 
-  console.log(
-    `Pool ${poolAddress} state: currentTick = ${currentTick}, nearestTick = ${nearestTick}`
+  // Approve tokens
+  await approveToken(
+    token0,
+    process.env.POSITION_MANAGER_ADDRESS,
+    amount0Desired,
+    wallet
   );
-  console.log(`Using tick range: [${tickLower}, ${tickUpper}]`);
-
-  const amount0Min = 0; // amount0Desired.mul(50).div(100); // 50% of desired
-  const amount1Min = 0; //amount1Desired.mul(50).div(100); // 50% of desired
-
-  const deadline = Math.floor(Date.now() / 1000) + 300;
-
-  // Approve tokens for the NonfungiblePositionManager.
-  const erc20Abi = [
-    "function approve(address spender, uint256 amount) external returns (bool)",
-    "function allowance(address owner, address spender) view returns (uint256)",
-  ];
-  const token0Contract = new ethers.Contract(token0, erc20Abi, wallet);
-  const token1Contract = new ethers.Contract(token1, erc20Abi, wallet);
-
-  const allowance0 = await token0Contract.allowance(
-    wallet.address,
-    POSITION_MANAGER_ADDRESS
+  await approveToken(
+    token1,
+    process.env.POSITION_MANAGER_ADDRESS,
+    amount1Desired,
+    wallet
   );
-  if (allowance0.lt(amount0Desired)) {
-    console.log("Approving token0...");
-    const txApprove0 = await token0Contract.approve(
-      POSITION_MANAGER_ADDRESS,
-      amount0Desired
-    );
-    await txApprove0.wait();
-  }
-  const allowance1 = await token1Contract.allowance(
-    wallet.address,
-    POSITION_MANAGER_ADDRESS
-  );
-  if (allowance1.lt(amount1Desired)) {
-    console.log("Approving token1...");
-    const txApprove1 = await token1Contract.approve(
-      POSITION_MANAGER_ADDRESS,
-      amount1Desired
-    );
-    await txApprove1.wait();
-  }
 
   const positionManagerAbi = [
     "function mint((address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
   ];
+
   const positionManager = new ethers.Contract(
-    POSITION_MANAGER_ADDRESS,
+    process.env.POSITION_MANAGER_ADDRESS,
     positionManagerAbi,
     wallet
   );
@@ -191,17 +188,16 @@ async function addLiquidityByPoolAddress() {
     tickUpper,
     amount0Desired,
     amount1Desired,
-    amount0Min,
-    amount1Min,
+    amount0Min: 0,
+    amount1Min: 0,
     recipient: wallet.address,
-    deadline,
+    deadline: Math.floor(Date.now() / 1000) + 300,
   };
 
   console.log("Minting liquidity position...");
   const txMint = await positionManager.mint(params, {
     value: 0,
-    gasLimit: 1000000,
-    gasPrice: ethers.utils.parseUnits("10", "gwei"),
+    ...getCommonGasConfig(),
   });
   const receiptMint = await txMint.wait();
   console.log("Liquidity added. Transaction receipt:", receiptMint);
@@ -211,31 +207,24 @@ async function addLiquidityByPoolAddress() {
 async function removeLiquidity() {
   const tokenId = 12732;
   const liquidityToRemove = ethers.BigNumber.from("99999999999999999");
-  const RPC_URL = process.env.BASE_SEPOLIA_RPC_URL;
-  const PRIVATE_KEY = process.env.PRIVATE_KEY;
-  const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS;
 
-  const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+  const { wallet } = getProviderAndWallet(
+    process.env.BASE_SEPOLIA_RPC_URL,
+    process.env.PRIVATE_KEY
+  );
 
   const positionManagerAbi = [
-    // decreaseLiquidity takes a struct as parameter.
     "function decreaseLiquidity((uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external payable returns (uint256 amount0, uint256 amount1)",
-    // collect function to withdraw tokens.
     "function collect((uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max)) external payable returns (uint256 amount0, uint256 amount1)",
   ];
 
   const positionManager = new ethers.Contract(
-    POSITION_MANAGER_ADDRESS,
+    process.env.POSITION_MANAGER_ADDRESS,
     positionManagerAbi,
     wallet
   );
 
-  // Set a deadline (e.g., 5 minutes from now)
   const deadline = Math.floor(Date.now() / 1000) + 300;
-
-  const amount0Min = 0;
-  const amount1Min = 0;
 
   console.log(
     `Decreasing liquidity for tokenId ${tokenId} by ${liquidityToRemove.toString()}`
@@ -244,119 +233,72 @@ async function removeLiquidity() {
     {
       tokenId,
       liquidity: liquidityToRemove,
-      amount0Min,
-      amount1Min,
+      amount0Min: 0,
+      amount1Min: 0,
       deadline,
     },
-    {
-      gasLimit: 3000000,
-      gasPrice: ethers.utils.parseUnits("10", "gwei"),
-    }
+    getCommonGasConfig(3000000)
   );
+
   const receiptDecrease = await txDecrease.wait();
   console.log("Liquidity decreased. Receipt:", receiptDecrease);
 
+  const maxUint128 = ethers.BigNumber.from(2).pow(128).sub(1);
   const paramsCollect = {
     tokenId,
     recipient: wallet.address,
-    amount0Max: ethers.BigNumber.from(2).pow(128).sub(1),
-    amount1Max: ethers.BigNumber.from(2).pow(128).sub(1),
+    amount0Max: maxUint128,
+    amount1Max: maxUint128,
   };
 
   console.log(`Collecting tokens for tokenId ${tokenId}`);
-  const txCollect = await positionManager.collect(paramsCollect, {
-    gasLimit: 3000000,
-    gasPrice: ethers.utils.parseUnits("10", "gwei"),
-  });
+  const txCollect = await positionManager.collect(
+    paramsCollect,
+    getCommonGasConfig(3000000)
+  );
   const receiptCollect = await txCollect.wait();
   console.log("Tokens collected. Receipt:", receiptCollect);
 }
 
-function encodePriceSqrt(token0Decimals, token1Decimals, priceFloat) {
-  // Step 1: shift the price by token1 decimals
-  const numerator = ethers.utils.parseUnits(
-    priceFloat.toString(),
-    token1Decimals
-  );
-
-  // Step 2: denominator = 10^token0Decimals
-  const denominator = ethers.BigNumber.from(10).pow(token0Decimals);
-
-  /// ratioQ192 = (numerator << 192) / denominator
-  const shift192 = ethers.BigNumber.from(1).shl(192);
-  const ratioQ192 = numerator.mul(shift192).div(denominator);
-
-  // Integer square root function for ethers.BigNumber
-  function bnSqrt(value) {
-    let x = value;
-    let y = x.add(1).shr(1);
-    while (y.lt(x)) {
-      x = y;
-      y = x.add(value.div(x)).shr(1);
-    }
-    return x;
-  }
-
-  const sqrtPriceX96 = bnSqrt(ratioQ192);
-  return sqrtPriceX96;
-}
-
 async function swapTokens() {
   try {
-    // ----- Configuration -----
-    const RPC_URL = process.env.BASE_SEPOLIA_RPC_URL;
-    const PRIVATE_KEY = process.env.PRIVATE_KEY;
-    const SWAP_ROUTER_ADDRESS = process.env.UNISWAP_ROUTER_ADDRESS;
-    const TOKEN_0 = "0x3A3d21711048F56c33Ab90b35b35E48edabE1a09"; // Token to swap from
-    const TOKEN_1 = "0x4200000000000000000000000000000000000006"; // Token to swap to
-    const FEE = 3000;
-    const amountIn = ethers.utils.parseUnits("0.001", 18);
-    const deadline = Math.floor(Date.now() / 1000) + 10 * 60; // 10 minutes from now
-    const amountOutMinimum = 0;
-    const sqrtPriceLimitX96 = 0;
-
-    // ----- Set up provider and wallet -----
-    const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-
-    // ----- Approve token for the router -----
-    const erc20Abi = [
-      "function approve(address spender, uint256 amount) external returns (bool)",
-    ];
-    const tokenContract = new ethers.Contract(TOKEN_0, erc20Abi, wallet);
-    console.log("Approving token for the router...");
-    const txApprove = await tokenContract.approve(
-      SWAP_ROUTER_ADDRESS,
-      amountIn
+    const { wallet } = getProviderAndWallet(
+      process.env.BASE_SEPOLIA_RPC_URL,
+      process.env.PRIVATE_KEY
     );
-    await txApprove.wait();
-    console.log("Token approved.");
 
-    // ----- Prepare the swap -----
-    const swapRouterAbi = [
-      "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)",
-    ];
-    const swapRouter = new ethers.Contract(
-      SWAP_ROUTER_ADDRESS,
-      swapRouterAbi,
+    const TOKEN_0 = "0x3A3d21711048F56c33Ab90b35b35E48edabE1a09";
+    const TOKEN_1 = "0x4200000000000000000000000000000000000006";
+    const amountIn = ethers.utils.parseUnits("0.001", 18);
+
+    await approveToken(
+      TOKEN_0,
+      process.env.UNISWAP_ROUTER_ADDRESS,
+      amountIn,
       wallet
     );
+
+    const swapRouter = new ethers.Contract(
+      process.env.UNISWAP_ROUTER_ADDRESS,
+      SWAP_ROUTER_ABI,
+      wallet
+    );
+
     const params = {
       tokenIn: TOKEN_0,
       tokenOut: TOKEN_1,
-      fee: FEE,
+      fee: 3000,
       recipient: wallet.address,
-      deadline: deadline,
-      amountIn: amountIn,
-      amountOutMinimum: amountOutMinimum,
-      sqrtPriceLimitX96: sqrtPriceLimitX96,
+      amountIn,
+      amountOutMinimum: 0,
+      sqrtPriceLimitX96: 0,
     };
 
     console.log("Performing swap...");
-    const txSwap = await swapRouter.exactInputSingle(params, {
-      gasLimit: 1000000,
-      gasPrice: ethers.utils.parseUnits("10", "gwei"),
-    });
+    const txSwap = await swapRouter.exactInputSingle(
+      params,
+      getCommonGasConfig()
+    );
     const receipt = await txSwap.wait();
     console.log("Swap complete. Transaction receipt:", receipt);
   } catch (error) {
@@ -364,9 +306,14 @@ async function swapTokens() {
   }
 }
 
-swapTokens()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+// Execute
+// swapTokens()
+//   .then(() => process.exit(0))
+//   .catch((error) => {
+//     console.error(error);
+//     process.exit(1);
+//   });
+
+module.exports = {
+  approveToken,
+};

@@ -34,21 +34,6 @@ async function getAllProjects() {
   console.log(response);
 }
 
-async function addValue() {
-  const Contract = await ethers.getContractFactory("AIVP");
-  const contract = Contract.attach(process.env.AIVP_PROTOCOL_ADDRESS);
-
-  const response = await contract.addValue(0, ethers.utils.parseEther("1"), {
-    value: ethers.utils.parseEther((1 / 20).toString()),
-    gasLimit: 1000000,
-    gasPrice: ethers.utils.parseUnits("10", "gwei"),
-  });
-
-  const receipt = await response.wait();
-
-  console.log(receipt);
-}
-
 async function processValueNativeToken() {
   const Contract = await ethers.getContractFactory("AIVP");
   const contract = Contract.attach(process.env.AIVP_PROTOCOL_ADDRESS);
@@ -69,7 +54,54 @@ async function processValueNativeToken() {
   console.log(receipt);
 }
 
-processValueNativeToken()
+async function processValueERC20() {
+  const Contract = await ethers.getContractFactory("AIVP");
+  const contract = Contract.attach(process.env.AIVP_PROTOCOL_ADDRESS);
+  const projectId = 0;
+  // const tokenAddress = "0xF704F975a729D98aDF6c29cCAa56B8ACecA4663E";
+  const tokenAddress = "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238";
+  const provider = new ethers.providers.JsonRpcProvider(
+    process.env.ETH_SEPOLIA_RPC_URL
+  );
+  const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+  await approveToken(
+    tokenAddress,
+    process.env.AIVP_PROTOCOL_ADDRESS,
+    ethers.utils.parseUnits("10", 6),
+    wallet
+  );
+
+  const response = await contract.processValueERC20(
+    projectId,
+    tokenAddress,
+    ethers.utils.parseUnits("10", 6),
+    {
+      gasLimit: 1000000,
+      gasPrice: ethers.utils.parseUnits("10", "gwei"),
+    }
+  );
+
+  const receipt = await response.wait();
+
+  console.log(receipt);
+}
+
+const approveToken = async (tokenAddress, spenderAddress, amount, wallet) => {
+  const erc20Abi = [
+    "function approve(address spender, uint256 amount) external returns (bool)",
+  ];
+  const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, wallet);
+  console.log("Approving token...");
+  const tx = await tokenContract.approve(spenderAddress, amount, {
+    gasLimit: 1000000,
+    gasPrice: ethers.utils.parseUnits("10", "gwei"),
+  });
+  const res = await tx.wait();
+  console.log("Token approved");
+  console.log(res);
+};
+
+getAllProjects()
   .then(() => process.exit(0))
   .catch((error) => {
     console.error(error);

@@ -17,7 +17,7 @@ task("accounts", "Prints the list of accounts", async () => {
 });
 
 module.exports = {
-  defaultNetwork: "baseSepolia",
+  defaultNetwork: "ethSepolia",
   networks: {
     hardhat: {
       accounts: [
@@ -50,6 +50,10 @@ module.exports = {
     },
     base: {
       url: process.env.BASE_RPC_URL,
+      accounts: [process.env.PRIVATE_KEY],
+    },
+    ethSepolia: {
+      url: process.env.ETH_SEPOLIA_RPC_URL,
       accounts: [process.env.PRIVATE_KEY],
     },
   },

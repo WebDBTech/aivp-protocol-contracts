@@ -5,10 +5,11 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol"
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "../interfaces/IAIVP.sol";
-import "../interfaces/ISwapRouter.sol";
+import "../interfaces/IV3SwapRouter.sol";
 import "../interfaces/IUniswapV3Factory.sol";
-import "../libraries/AIVPSwap.sol";
+import "../interfaces/IAIVP.sol";
+import "../libraries/UniswapHelper.sol";
+import "../libraries/TransferHelper.sol";
 
 /**
  * @title AIVP (AI Value Protocol)
@@ -27,12 +28,12 @@ contract AIVP is
     uint256 private constant SELF_REGISTRATION_FEE = 0.0001 ether;
     /// @notice Role identifier for accounts that can upgrade the contract
     bytes32 private constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    /// @notice Denominator for protocol fee calculation (5% fee)
-    uint256 private constant PROTOCOL_FEE_DENOMINATOR = 20;
-    /// @notice Numerator for AIVP token share calculation (4.5% of protocol fee)
-    uint256 private constant AIVP_SHARE_NUMERATOR = 9;
-    /// @notice Denominator for AIVP token share calculation
-    uint256 private constant AIVP_SHARE_DENOMINATOR = 10;
+    /// @notice Numerator for protocol fee calculation (5% fee)
+    uint256 private constant PROTOCOL_FEE_NUMERATOR = 500;
+    /// @notice Numerator for AIVP token share calculation (90% of protocol fee)
+    uint256 private constant AIVP_SHARE_NUMERATOR = 9000;
+    /// @notice Denominator for fee calculation
+    uint256 private constant SHARE_DENOMINATOR = 10000;
     /// @notice Time offset for swap deadline (5 minutes)
     uint256 private constant SWAP_DEADLINE_OFFSET = 300;
 
@@ -44,7 +45,7 @@ contract AIVP is
     /// @notice Address of the WETH token contract
     address public weth;
     /// @notice Interface for Uniswap V3 Router
-    ISwapRouter public swapRouter;
+    IV3SwapRouter public swapRouter;
     /// @notice Interface for Uniswap V3 Factory
     IUniswapV3Factory public swapFactory;
 
@@ -82,7 +83,7 @@ contract AIVP is
 
         aivpToken = _aivpToken;
         weth = _weth;
-        swapRouter = ISwapRouter(_router);
+        swapRouter = IV3SwapRouter(_router);
         swapFactory = IUniswapV3Factory(_factory);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -193,26 +194,26 @@ contract AIVP is
     ) external payable {
         if (projects[_projectId].owner == address(0)) revert ProjectNotFound();
 
-        uint256 protocolShare = _amount / PROTOCOL_FEE_DENOMINATOR; // 5%
+        uint256 protocolShare = (_amount * PROTOCOL_FEE_NUMERATOR) /
+            SHARE_DENOMINATOR; // 5%
         uint256 aivpShare = (protocolShare * AIVP_SHARE_NUMERATOR) /
-            AIVP_SHARE_DENOMINATOR; // 4.5%
+            SHARE_DENOMINATOR; // 4.5%
 
         if (msg.value < protocolShare) revert InsufficientFee();
 
-        uint256 aivpTokenAmount = AIVPSwap.swapNativeToken(
+        uint256 aivpTokenAmount = UniswapHelper.swapNativeToken(
             swapRouter,
             swapFactory,
             weth,
             aivpToken,
             aivpShare,
-            0,
-            block.timestamp + SWAP_DEADLINE_OFFSET
+            0
         );
 
         projects[_projectId].claimedAIVP += aivpTokenAmount;
         _addTokenToProject(_projectId, address(0), _amount);
 
-        emit ValueAdded(_projectId, _amount);
+        emit ValueAdded(_projectId, address(0), _amount);
     }
 
     /// @notice Process ERC20 token value for a project
@@ -227,24 +228,32 @@ contract AIVP is
     ) external {
         if (projects[_projectId].owner == address(0)) revert ProjectNotFound();
 
-        uint256 protocolShare = _amount / PROTOCOL_FEE_DENOMINATOR;
+        uint256 protocolShare = (_amount * PROTOCOL_FEE_NUMERATOR) /
+            SHARE_DENOMINATOR; // 5%
         uint256 aivpShare = (protocolShare * AIVP_SHARE_NUMERATOR) /
-            AIVP_SHARE_DENOMINATOR;
+            SHARE_DENOMINATOR; // 4.5%
 
-        uint256 aivpTokenAmount = AIVPSwap.swapERC20(
+        TransferHelper.safeTransferFrom(
+            _tokenAddress,
+            msg.sender,
+            address(this),
+            protocolShare
+        );
+
+        uint256 aivpTokenAmount = UniswapHelper.swapERC20(
             swapRouter,
             swapFactory,
             _tokenAddress,
             aivpToken,
             aivpShare,
             0,
-            block.timestamp + SWAP_DEADLINE_OFFSET
+            weth
         );
 
         projects[_projectId].claimedAIVP += aivpTokenAmount;
         _addTokenToProject(_projectId, _tokenAddress, _amount);
 
-        emit ValueAdded(_projectId, _amount);
+        emit ValueAdded(_projectId, _tokenAddress, _amount);
     }
 
     /// @notice Adds or updates token amount for a project

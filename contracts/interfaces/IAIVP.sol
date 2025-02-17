@@ -71,7 +71,7 @@ interface IAIVP {
     /// @notice Emitted when value is processed for a project
     /// @param projectId ID of the project receiving the value
     /// @param amount Amount of value processed
-    event ValueAdded(uint256 indexed projectId, uint256 amount);
+    event ValueAdded(uint256 indexed projectId, address token, uint256 amount);
 
     /// @notice Registers a new project in the protocol
     /// @param _regsitraionInfo Project registration details
